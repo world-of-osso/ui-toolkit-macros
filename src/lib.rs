@@ -42,7 +42,11 @@ fn capitalize_first(s: &str) -> String {
 
 fn resolve_tag(raw: &str) -> String {
     let known = tag_to_type(raw);
-    if known.is_empty() { capitalize_first(raw) } else { known.to_string() }
+    if known.is_empty() {
+        capitalize_first(raw)
+    } else {
+        known.to_string()
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────
@@ -136,7 +140,11 @@ fn parse_if(input: ParseStream) -> syn::Result<IfAst> {
     } else {
         None
     };
-    Ok(IfAst { cond, then_children, else_children })
+    Ok(IfAst {
+        cond,
+        then_children,
+        else_children,
+    })
 }
 
 fn parse_children(input: ParseStream) -> syn::Result<Vec<ChildAst>> {
@@ -150,8 +158,20 @@ fn parse_children(input: ParseStream) -> syn::Result<Vec<ChildAst>> {
 /// Returns true if the stream is at `ident :` (but not `ident ::`).
 fn peek_is_attr(input: ParseStream) -> bool {
     let fork = input.fork();
-    let Ok(_) = fork.call(Ident::parse_any) else { return false };
+    let Ok(_) = fork.call(Ident::parse_any) else {
+        return false;
+    };
     fork.peek(Token![:]) && !fork.peek(Token![::])
+}
+
+/// Returns true if the stream is at `ident ,` or `ident` at end-of-stream
+/// (shorthand field syntax: `name,` means `name: name,`).
+fn peek_is_shorthand_attr(input: ParseStream) -> bool {
+    let fork = input.fork();
+    let Ok(_) = fork.call(Ident::parse_any) else {
+        return false;
+    };
+    fork.peek(Token![,]) || fork.is_empty()
 }
 
 fn parse_element(input: ParseStream) -> syn::Result<ElementAst> {
@@ -176,7 +196,26 @@ fn parse_element_contents(content: ParseStream, tag: String) -> syn::Result<Elem
         }
         if peek_is_attr(content) {
             parse_attr_item(content, &mut name_attr, &mut attrs)?;
-            if content.peek(Token![,]) { content.parse::<Token![,]>()?; }
+            if content.peek(Token![,]) {
+                content.parse::<Token![,]>()?;
+            }
+            continue;
+        }
+        if peek_is_shorthand_attr(content) {
+            let ident: Ident = content.call(Ident::parse_any)?;
+            if content.peek(Token![,]) {
+                content.parse::<Token![,]>()?;
+            }
+            let attr_name = ident.to_string();
+            let expr: Expr = syn::parse2(quote! { #ident })?;
+            if attr_name == "name" {
+                name_attr = Some(NameAttr::Expr(expr));
+            } else {
+                attrs.push(AttrAst {
+                    name: attr_name,
+                    value: AttrValueAst::Expr(expr),
+                });
+            }
             continue;
         }
         if content.peek(Ident::peek_any) {
@@ -185,7 +224,13 @@ fn parse_element_contents(content: ParseStream, tag: String) -> syn::Result<Elem
         }
         break;
     }
-    Ok(ElementAst { tag, name_attr, attrs, anchors, children })
+    Ok(ElementAst {
+        tag,
+        name_attr,
+        attrs,
+        anchors,
+        children,
+    })
 }
 
 fn parse_attr_item(
@@ -199,7 +244,10 @@ fn parse_attr_item(
     if attr_name == "name" {
         *name_attr = Some(parse_name_attr(input)?);
     } else {
-        attrs.push(AttrAst { name: attr_name, value: parse_attr_value(input)? });
+        attrs.push(AttrAst {
+            name: attr_name,
+            value: parse_attr_value(input)?,
+        });
     }
     Ok(())
 }
@@ -215,24 +263,47 @@ fn parse_child_item(
     if child_tag == "anchor" {
         let anchor_content;
         braced!(anchor_content in input);
-        anchors.push(AnchorAst { attrs: parse_anchor_attrs(&anchor_content)? });
+        anchors.push(AnchorAst {
+            attrs: parse_anchor_attrs(&anchor_content)?,
+        });
     } else {
         let resolved = resolve_tag(child_tag);
         let content;
         braced!(content in input);
-        children.push(ChildAst::Element(parse_element_contents(&content, resolved)?));
+        children.push(ChildAst::Element(parse_element_contents(
+            &content, resolved,
+        )?));
     }
     Ok(())
 }
 
 fn parse_anchor_attrs(input: ParseStream) -> syn::Result<Vec<AttrAst>> {
     let mut attrs = Vec::new();
-    while !input.is_empty() && peek_is_attr(input) {
-        let name_ident: Ident = input.call(Ident::parse_any)?;
-        input.parse::<Token![:]>()?;
-        let val = parse_attr_value(input)?;
-        attrs.push(AttrAst { name: name_ident.to_string(), value: val });
-        if input.peek(Token![,]) { input.parse::<Token![,]>()?; }
+    while !input.is_empty() {
+        if peek_is_attr(input) {
+            let name_ident: Ident = input.call(Ident::parse_any)?;
+            input.parse::<Token![:]>()?;
+            let val = parse_attr_value(input)?;
+            attrs.push(AttrAst {
+                name: name_ident.to_string(),
+                value: val,
+            });
+            if input.peek(Token![,]) {
+                input.parse::<Token![,]>()?;
+            }
+        } else if peek_is_shorthand_attr(input) {
+            let ident: Ident = input.call(Ident::parse_any)?;
+            if input.peek(Token![,]) {
+                input.parse::<Token![,]>()?;
+            }
+            let expr: Expr = syn::parse2(quote! { #ident })?;
+            attrs.push(AttrAst {
+                name: ident.to_string(),
+                value: AttrValueAst::Expr(expr),
+            });
+        } else {
+            break;
+        }
     }
     Ok(attrs)
 }
@@ -244,7 +315,12 @@ fn parse_attr_value(input: ParseStream) -> syn::Result<AttrValueAst> {
     }
     if input.peek(LitFloat) {
         let f: LitFloat = input.parse()?;
-        let s = f.base10_digits().split('.').next().unwrap_or("0").to_string();
+        let s = f
+            .base10_digits()
+            .split('.')
+            .next()
+            .unwrap_or("0")
+            .to_string();
         return Ok(AttrValueAst::NumLit(s));
     }
     if input.peek(LitInt) {
@@ -371,7 +447,8 @@ fn gen_anchor_field(name: &str, attrs: &[AttrAst]) -> TokenStream2 {
         "relative_to" => quote! { "$parent".to_string() },
         _ => quote! { "0".to_string() },
     };
-    attrs.iter()
+    attrs
+        .iter()
         .find(|a| a.name == name)
         .map(|a| gen_anchor_field_value(&a.value))
         .unwrap_or(default)
