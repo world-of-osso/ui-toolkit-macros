@@ -128,7 +128,18 @@ fn parse_child(input: ParseStream) -> syn::Result<ChildAst> {
 
 fn parse_if(input: ParseStream) -> syn::Result<IfAst> {
     input.parse::<Token![if]>()?;
-    let cond: Expr = input.call(Expr::parse_without_eager_brace)?;
+    let negated = input.peek(Token![!]);
+    if negated {
+        input.parse::<Token![!]>()?;
+    }
+    let mut cond: Expr = input.call(Expr::parse_without_eager_brace)?;
+    if negated {
+        cond = Expr::Unary(syn::ExprUnary {
+            attrs: vec![],
+            op: syn::UnOp::Not(syn::token::Not::default()),
+            expr: Box::new(cond),
+        });
+    }
     let then_content;
     braced!(then_content in input);
     let then_children = parse_children(&then_content)?;
