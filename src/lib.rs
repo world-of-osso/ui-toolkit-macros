@@ -69,6 +69,10 @@ struct AnchorAst {
     attrs: Vec<AttrAst>,
 }
 
+struct NineSliceAst {
+    attrs: Vec<AttrAst>,
+}
+
 enum ChildAst {
     Element(ElementAst),
     Block(Expr),
@@ -86,6 +90,7 @@ struct ElementAst {
     name_attr: Option<NameAttr>,
     attrs: Vec<AttrAst>,
     anchors: Vec<AnchorAst>,
+    nine_slice: Option<NineSliceAst>,
     children: Vec<ChildAst>,
 }
 
@@ -198,6 +203,7 @@ fn parse_element_contents(content: ParseStream, tag: String) -> syn::Result<Elem
     let mut name_attr: Option<NameAttr> = None;
     let mut attrs: Vec<AttrAst> = Vec::new();
     let mut anchors: Vec<AnchorAst> = Vec::new();
+    let mut nine_slice: Option<NineSliceAst> = None;
     let mut children: Vec<ChildAst> = Vec::new();
 
     while !content.is_empty() {
@@ -230,7 +236,7 @@ fn parse_element_contents(content: ParseStream, tag: String) -> syn::Result<Elem
             continue;
         }
         if content.peek(Ident::peek_any) {
-            parse_child_item(content, &mut anchors, &mut children)?;
+            parse_child_item(content, &mut anchors, &mut nine_slice, &mut children)?;
             continue;
         }
         break;
@@ -240,6 +246,7 @@ fn parse_element_contents(content: ParseStream, tag: String) -> syn::Result<Elem
         name_attr,
         attrs,
         anchors,
+        nine_slice,
         children,
     })
 }
@@ -266,6 +273,7 @@ fn parse_attr_item(
 fn parse_child_item(
     input: ParseStream,
     anchors: &mut Vec<AnchorAst>,
+    nine_slice: &mut Option<NineSliceAst>,
     children: &mut Vec<ChildAst>,
 ) -> syn::Result<()> {
     let child_ident: Ident = input.call(Ident::parse_any)?;
@@ -276,6 +284,12 @@ fn parse_child_item(
         braced!(anchor_content in input);
         anchors.push(AnchorAst {
             attrs: parse_anchor_attrs(&anchor_content)?,
+        });
+    } else if child_tag == "nine_slice" {
+        let ns_content;
+        braced!(ns_content in input);
+        *nine_slice = Some(NineSliceAst {
+            attrs: parse_anchor_attrs(&ns_content)?,
         });
     } else {
         let resolved = resolve_tag(child_tag);
@@ -406,6 +420,7 @@ fn gen_widget_def(el: &ElementAst) -> TokenStream2 {
     let name_expr = gen_name_expr(&el.name_attr);
     let attrs_tokens: Vec<_> = el.attrs.iter().map(gen_attr).collect();
     let anchors_tokens: Vec<_> = el.anchors.iter().map(gen_anchor).collect();
+    let nine_slice_expr = gen_nine_slice(&el.nine_slice);
     let children_tokens: Vec<_> = el.children.iter().map(gen_widget_child).collect();
     quote! {
         ui_toolkit::widget_def::WidgetDef {
@@ -414,7 +429,7 @@ fn gen_widget_def(el: &ElementAst) -> TokenStream2 {
             name: #name_expr,
             attrs: vec![#(#attrs_tokens),*],
             anchors: vec![#(#anchors_tokens),*],
-            nine_slice: None,
+            nine_slice: #nine_slice_expr,
             children: vec![#(#children_tokens),*],
         }
     }
@@ -481,6 +496,66 @@ fn gen_anchor(anchor: &AnchorAst) -> TokenStream2 {
             y: #y,
         }
     }
+}
+
+fn gen_nine_slice(ns: &Option<NineSliceAst>) -> TokenStream2 {
+    let Some(ns) = ns else {
+        return quote! { None };
+    };
+    let edge_size = gen_nine_slice_f32("edge_size", &ns.attrs, 8.0);
+    let bg_color = gen_nine_slice_color("bg_color", &ns.attrs, [0.0, 0.0, 0.0, 0.5]);
+    let border_color = gen_nine_slice_color("border_color", &ns.attrs, [1.0, 1.0, 1.0, 1.0]);
+    let textures = gen_nine_slice_textures(&ns.attrs);
+    quote! {
+        Some(ui_toolkit::widget_def::NineSliceDef {
+            edge_size: #edge_size,
+            bg_color: #bg_color,
+            border_color: #border_color,
+            textures: #textures,
+        })
+    }
+}
+
+fn gen_nine_slice_f32(name: &str, attrs: &[AttrAst], default: f32) -> TokenStream2 {
+    if let Some(attr) = attrs.iter().find(|a| a.name == name) {
+        match &attr.value {
+            AttrValueAst::NumLit(s) => {
+                let val: f32 = s.parse().unwrap_or(default);
+                quote! { #val }
+            }
+            AttrValueAst::Expr(expr) => quote! { #expr as f32 },
+            _ => quote! { #default },
+        }
+    } else {
+        quote! { #default }
+    }
+}
+
+fn gen_nine_slice_color(name: &str, attrs: &[AttrAst], default: [f32; 4]) -> TokenStream2 {
+    if let Some(attr) = attrs.iter().find(|a| a.name == name) {
+        if let AttrValueAst::StringLit(s) = &attr.value {
+            let parts: Vec<f32> = s.split(',').filter_map(|p| p.trim().parse().ok()).collect();
+            if parts.len() == 4 {
+                let r = parts[0];
+                let g = parts[1];
+                let b = parts[2];
+                let a = parts[3];
+                return quote! { [#r, #g, #b, #a] };
+            }
+        }
+    }
+    let [r, g, b, a] = default;
+    quote! { [#r, #g, #b, #a] }
+}
+
+fn gen_nine_slice_textures(attrs: &[AttrAst]) -> TokenStream2 {
+    let Some(attr) = attrs.iter().find(|a| a.name == "textures") else {
+        return quote! { None };
+    };
+    if let AttrValueAst::Expr(expr) = &attr.value {
+        return quote! { Some(#expr.map(|s: &str| s.to_string())) };
+    }
+    quote! { None }
 }
 
 fn gen_anchor_field_value(val: &AttrValueAst) -> TokenStream2 {
