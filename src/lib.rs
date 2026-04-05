@@ -414,6 +414,7 @@ fn gen_widget_def(el: &ElementAst) -> TokenStream2 {
             name: #name_expr,
             attrs: vec![#(#attrs_tokens),*],
             anchors: vec![#(#anchors_tokens),*],
+            nine_slice: None,
             children: vec![#(#children_tokens),*],
         }
     }
