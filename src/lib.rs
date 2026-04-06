@@ -533,15 +533,26 @@ fn gen_nine_slice_f32(name: &str, attrs: &[AttrAst], default: f32) -> TokenStrea
 
 fn gen_nine_slice_color(name: &str, attrs: &[AttrAst], default: [f32; 4]) -> TokenStream2 {
     if let Some(attr) = attrs.iter().find(|a| a.name == name) {
-        if let AttrValueAst::StringLit(s) = &attr.value {
-            let parts: Vec<f32> = s.split(',').filter_map(|p| p.trim().parse().ok()).collect();
-            if parts.len() == 4 {
-                let r = parts[0];
-                let g = parts[1];
-                let b = parts[2];
-                let a = parts[3];
-                return quote! { [#r, #g, #b, #a] };
+        match &attr.value {
+            AttrValueAst::StringLit(s) => {
+                let parts: Vec<f32> =
+                    s.split(',').filter_map(|p| p.trim().parse().ok()).collect();
+                if parts.len() == 4 {
+                    let r = parts[0];
+                    let g = parts[1];
+                    let b = parts[2];
+                    let a = parts[3];
+                    return quote! { [#r, #g, #b, #a] };
+                }
             }
+            AttrValueAst::Expr(expr) => {
+                return quote! { {
+                    let s: &str = #expr;
+                    let p: Vec<f32> = s.split(',').filter_map(|p| p.trim().parse().ok()).collect();
+                    if p.len() == 4 { [p[0], p[1], p[2], p[3]] } else { [0.0, 0.0, 0.0, 1.0] }
+                } };
+            }
+            _ => {}
         }
     }
     let [r, g, b, a] = default;
@@ -553,7 +564,7 @@ fn gen_nine_slice_textures(attrs: &[AttrAst]) -> TokenStream2 {
         return quote! { None };
     };
     if let AttrValueAst::Expr(expr) = &attr.value {
-        return quote! { Some(#expr.map(|s: &str| s.to_string())) };
+        return quote! { Some(#expr.map(|s| String::from(s))) };
     }
     quote! { None }
 }
