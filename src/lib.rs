@@ -200,55 +200,81 @@ fn parse_element(input: ParseStream) -> syn::Result<ElementAst> {
 }
 
 fn parse_element_contents(content: ParseStream, tag: String) -> syn::Result<ElementAst> {
-    let mut name_attr: Option<NameAttr> = None;
-    let mut attrs: Vec<AttrAst> = Vec::new();
-    let mut anchors: Vec<AnchorAst> = Vec::new();
-    let mut nine_slice: Option<NineSliceAst> = None;
-    let mut children: Vec<ChildAst> = Vec::new();
-
-    while !content.is_empty() {
-        if content.peek(Token![if]) || content.peek(Brace) {
-            children.push(parse_child(content)?);
-            continue;
-        }
-        if peek_is_attr(content) {
-            parse_attr_item(content, &mut name_attr, &mut attrs)?;
-            if content.peek(Token![,]) {
-                content.parse::<Token![,]>()?;
-            }
-            continue;
-        }
-        if peek_is_shorthand_attr(content) {
-            let ident: Ident = content.call(Ident::parse_any)?;
-            if content.peek(Token![,]) {
-                content.parse::<Token![,]>()?;
-            }
-            let attr_name = ident.to_string();
-            let expr: Expr = syn::parse2(quote! { #ident })?;
-            if attr_name == "name" {
-                name_attr = Some(NameAttr::Expr(expr));
-            } else {
-                attrs.push(AttrAst {
-                    name: attr_name,
-                    value: AttrValueAst::Expr(expr),
-                });
-            }
-            continue;
-        }
-        if content.peek(Ident::peek_any) {
-            parse_child_item(content, &mut anchors, &mut nine_slice, &mut children)?;
-            continue;
-        }
-        break;
-    }
+    let mut parts = ElementParts::default();
+    while parse_element_content_item(content, &mut parts)? {}
     Ok(ElementAst {
         tag,
-        name_attr,
-        attrs,
-        anchors,
-        nine_slice,
-        children,
+        name_attr: parts.name_attr,
+        attrs: parts.attrs,
+        anchors: parts.anchors,
+        nine_slice: parts.nine_slice,
+        children: parts.children,
     })
+}
+
+#[derive(Default)]
+struct ElementParts {
+    name_attr: Option<NameAttr>,
+    attrs: Vec<AttrAst>,
+    anchors: Vec<AnchorAst>,
+    nine_slice: Option<NineSliceAst>,
+    children: Vec<ChildAst>,
+}
+
+fn parse_element_content_item(content: ParseStream, parts: &mut ElementParts) -> syn::Result<bool> {
+    if content.is_empty() {
+        return Ok(false);
+    }
+    if content.peek(Token![if]) || content.peek(Brace) {
+        parts.children.push(parse_child(content)?);
+        return Ok(true);
+    }
+    if peek_is_attr(content) {
+        parse_attr_item(content, &mut parts.name_attr, &mut parts.attrs)?;
+        parse_optional_comma(content)?;
+        return Ok(true);
+    }
+    if peek_is_shorthand_attr(content) {
+        parse_shorthand_attr_item(content, &mut parts.name_attr, &mut parts.attrs)?;
+        return Ok(true);
+    }
+    if content.peek(Ident::peek_any) {
+        parse_child_item(
+            content,
+            &mut parts.anchors,
+            &mut parts.nine_slice,
+            &mut parts.children,
+        )?;
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+fn parse_shorthand_attr_item(
+    input: ParseStream,
+    name_attr: &mut Option<NameAttr>,
+    attrs: &mut Vec<AttrAst>,
+) -> syn::Result<()> {
+    let ident: Ident = input.call(Ident::parse_any)?;
+    parse_optional_comma(input)?;
+    let attr_name = ident.to_string();
+    let expr: Expr = syn::parse2(quote! { #ident })?;
+    if attr_name == "name" {
+        *name_attr = Some(NameAttr::Expr(expr));
+    } else {
+        attrs.push(AttrAst {
+            name: attr_name,
+            value: AttrValueAst::Expr(expr),
+        });
+    }
+    Ok(())
+}
+
+fn parse_optional_comma(input: ParseStream) -> syn::Result<()> {
+    if input.peek(Token![,]) {
+        input.parse::<Token![,]>()?;
+    }
+    Ok(())
 }
 
 fn parse_attr_item(
@@ -535,8 +561,7 @@ fn gen_nine_slice_color(name: &str, attrs: &[AttrAst], default: [f32; 4]) -> Tok
     if let Some(attr) = attrs.iter().find(|a| a.name == name) {
         match &attr.value {
             AttrValueAst::StringLit(s) => {
-                let parts: Vec<f32> =
-                    s.split(',').filter_map(|p| p.trim().parse().ok()).collect();
+                let parts: Vec<f32> = s.split(',').filter_map(|p| p.trim().parse().ok()).collect();
                 if parts.len() == 4 {
                     let r = parts[0];
                     let g = parts[1];
