@@ -558,29 +558,38 @@ fn gen_nine_slice_f32(name: &str, attrs: &[AttrAst], default: f32) -> TokenStrea
 }
 
 fn gen_nine_slice_color(name: &str, attrs: &[AttrAst], default: [f32; 4]) -> TokenStream2 {
-    if let Some(attr) = attrs.iter().find(|a| a.name == name) {
-        match &attr.value {
-            AttrValueAst::StringLit(s) => {
-                let parts: Vec<f32> = s.split(',').filter_map(|p| p.trim().parse().ok()).collect();
-                if parts.len() == 4 {
-                    let r = parts[0];
-                    let g = parts[1];
-                    let b = parts[2];
-                    let a = parts[3];
-                    return quote! { [#r, #g, #b, #a] };
-                }
-            }
-            AttrValueAst::Expr(expr) => {
-                return quote! { {
-                    let s: &str = #expr;
-                    let p: Vec<f32> = s.split(',').filter_map(|p| p.trim().parse().ok()).collect();
-                    if p.len() == 4 { [p[0], p[1], p[2], p[3]] } else { [0.0, 0.0, 0.0, 1.0] }
-                } };
-            }
-            _ => {}
-        }
+    let from_attr = attrs
+        .iter()
+        .find(|a| a.name == name)
+        .and_then(|attr| gen_nine_slice_color_from_attr(&attr.value));
+    from_attr.unwrap_or_else(|| quote_nine_slice_color(default))
+}
+
+fn gen_nine_slice_color_from_attr(value: &AttrValueAst) -> Option<TokenStream2> {
+    match value {
+        AttrValueAst::StringLit(s) => parse_color_components(s).map(quote_nine_slice_color),
+        AttrValueAst::Expr(expr) => Some(quote! { {
+            let s: &str = #expr;
+            let p: Vec<f32> = s.split(',').filter_map(|p| p.trim().parse().ok()).collect();
+            if p.len() == 4 { [p[0], p[1], p[2], p[3]] } else { [0.0, 0.0, 0.0, 1.0] }
+        } }),
+        _ => None,
     }
-    let [r, g, b, a] = default;
+}
+
+fn parse_color_components(raw: &str) -> Option<[f32; 4]> {
+    let parts: Vec<f32> = raw
+        .split(',')
+        .filter_map(|piece| piece.trim().parse().ok())
+        .collect();
+    if parts.len() != 4 {
+        return None;
+    }
+    Some([parts[0], parts[1], parts[2], parts[3]])
+}
+
+fn quote_nine_slice_color(color: [f32; 4]) -> TokenStream2 {
+    let [r, g, b, a] = color;
     quote! { [#r, #g, #b, #a] }
 }
 
