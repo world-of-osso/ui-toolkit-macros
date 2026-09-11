@@ -1,5 +1,9 @@
 //! Direct Bevy entity construction; the legacy widget-definition backend is untouched.
 
+#[cfg(test)]
+#[path = "native_tests.rs"]
+mod tests;
+
 use proc_macro2::{Span, TokenStream};
 use quote::{format_ident, quote};
 use syn::{
@@ -101,36 +105,43 @@ fn parse_node(input: ParseStream) -> syn::Result<Node> {
         let key: Ident = body.parse()?;
         body.parse::<Token![:]>()?;
         let value: Expr = body.parse()?;
-        match key.to_string().as_str() {
-            "id" => {
-                if node.id.is_some() {
-                    return Err(syn::Error::new(key.span(), "duplicate id"));
-                }
-                let Expr::Path(path) = value else {
-                    return Err(syn::Error::new(key.span(), "id must be an identifier"));
-                };
-                node.id = Some(
-                    path.path
-                        .get_ident()
-                        .cloned()
-                        .ok_or_else(|| syn::Error::new(key.span(), "id must be an identifier"))?,
-                );
-            }
-            "name" => set_once(&mut node.name, key, value)?,
-            "layout" => set_once(&mut node.layout, key, value)?,
-            "components" => set_once(&mut node.components, key, value)?,
-            _ => {
-                if node.fields.iter().any(|(field, _)| *field == key) {
-                    return Err(syn::Error::new(key.span(), "duplicate node field"));
-                }
-                node.fields.push((key, value));
-            }
-        }
+        store_attribute(&mut node, key, value)?;
         if !body.is_empty() {
             body.parse::<Token![,]>()?;
         }
     }
     Ok(node)
+}
+
+fn store_attribute(node: &mut Node, key: Ident, value: Expr) -> syn::Result<()> {
+    match key.to_string().as_str() {
+        "id" => {
+            if node.id.is_some() {
+                return Err(syn::Error::new(key.span(), "duplicate id"));
+            }
+            node.id = Some(binding_identifier(value, key.span())?);
+        }
+        "name" => set_once(&mut node.name, key, value)?,
+        "layout" => set_once(&mut node.layout, key, value)?,
+        "components" => set_once(&mut node.components, key, value)?,
+        _ => {
+            if node.fields.iter().any(|(field, _)| *field == key) {
+                return Err(syn::Error::new(key.span(), "duplicate node field"));
+            }
+            node.fields.push((key, value));
+        }
+    }
+    Ok(())
+}
+
+fn binding_identifier(value: Expr, span: Span) -> syn::Result<Ident> {
+    let Expr::Path(path) = value else {
+        return Err(syn::Error::new(span, "id must be an identifier"));
+    };
+    path.path
+        .get_ident()
+        .cloned()
+        .ok_or_else(|| syn::Error::new(span, "id must be an identifier"))
 }
 
 fn set_once(slot: &mut Option<Expr>, key: Ident, value: Expr) -> syn::Result<()> {
