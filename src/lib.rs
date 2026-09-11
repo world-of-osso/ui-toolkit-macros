@@ -1,3 +1,5 @@
+mod native;
+
 use proc_macro::TokenStream;
 use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::quote;
@@ -629,6 +631,13 @@ fn gen_anchor_field_value(val: &AttrValueAst) -> TokenStream2 {
 /// RSX macro: parses WoW-UI RSX syntax and expands to `Vec<WidgetChild>`.
 #[proc_macro]
 pub fn rsx(input: TokenStream) -> TokenStream {
+    if matches!(input.clone().into_iter().next(), Some(proc_macro::TokenTree::Punct(punct)) if punct.as_char() == '@')
+    {
+        return match syn::parse::<native::NativeInput>(input) {
+            Ok(input) => input.expand().into(),
+            Err(error) => error.to_compile_error().into(),
+        };
+    }
     let rsx_input = syn::parse_macro_input!(input as RsxInput);
     let children: Vec<TokenStream2> = rsx_input.roots.iter().map(gen_widget_child).collect();
     quote! { { vec![#(#children),*] } }.into()
