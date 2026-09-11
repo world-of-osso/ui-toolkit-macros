@@ -65,10 +65,6 @@ struct AttrAst {
     value: AttrValueAst,
 }
 
-struct AnchorAst {
-    attrs: Vec<AttrAst>,
-}
-
 struct NineSliceAst {
     attrs: Vec<AttrAst>,
 }
@@ -89,7 +85,6 @@ struct ElementAst {
     tag: String,
     name_attr: Option<NameAttr>,
     attrs: Vec<AttrAst>,
-    anchors: Vec<AnchorAst>,
     nine_slice: Option<NineSliceAst>,
     children: Vec<ChildAst>,
 }
@@ -193,6 +188,7 @@ fn peek_is_shorthand_attr(input: ParseStream) -> bool {
 fn parse_element(input: ParseStream) -> syn::Result<ElementAst> {
     let tag_ident: Ident = input.parse()?;
     let raw = tag_ident.to_string();
+    reject_legacy_anchor(&tag_ident)?;
     let tag = resolve_tag(raw.trim_start_matches("r#"));
     let content;
     braced!(content in input);
@@ -206,7 +202,6 @@ fn parse_element_contents(content: ParseStream, tag: String) -> syn::Result<Elem
         tag,
         name_attr: parts.name_attr,
         attrs: parts.attrs,
-        anchors: parts.anchors,
         nine_slice: parts.nine_slice,
         children: parts.children,
     })
@@ -216,7 +211,6 @@ fn parse_element_contents(content: ParseStream, tag: String) -> syn::Result<Elem
 struct ElementParts {
     name_attr: Option<NameAttr>,
     attrs: Vec<AttrAst>,
-    anchors: Vec<AnchorAst>,
     nine_slice: Option<NineSliceAst>,
     children: Vec<ChildAst>,
 }
@@ -239,12 +233,7 @@ fn parse_element_content_item(content: ParseStream, parts: &mut ElementParts) ->
         return Ok(true);
     }
     if content.peek(Ident::peek_any) {
-        parse_child_item(
-            content,
-            &mut parts.anchors,
-            &mut parts.nine_slice,
-            &mut parts.children,
-        )?;
+        parse_child_item(content, &mut parts.nine_slice, &mut parts.children)?;
         return Ok(true);
     }
     Ok(false)
@@ -298,24 +287,18 @@ fn parse_attr_item(
 
 fn parse_child_item(
     input: ParseStream,
-    anchors: &mut Vec<AnchorAst>,
     nine_slice: &mut Option<NineSliceAst>,
     children: &mut Vec<ChildAst>,
 ) -> syn::Result<()> {
     let child_ident: Ident = input.call(Ident::parse_any)?;
     let child_raw = child_ident.to_string();
     let child_tag = child_raw.trim_start_matches("r#");
-    if child_tag == "anchor" {
-        let anchor_content;
-        braced!(anchor_content in input);
-        anchors.push(AnchorAst {
-            attrs: parse_anchor_attrs(&anchor_content)?,
-        });
-    } else if child_tag == "nine_slice" {
+    reject_legacy_anchor(&child_ident)?;
+    if child_tag == "nine_slice" {
         let ns_content;
         braced!(ns_content in input);
         *nine_slice = Some(NineSliceAst {
-            attrs: parse_anchor_attrs(&ns_content)?,
+            attrs: parse_pseudo_element_attrs(&ns_content)?,
         });
     } else {
         let resolved = resolve_tag(child_tag);
@@ -328,7 +311,21 @@ fn parse_child_item(
     Ok(())
 }
 
-fn parse_anchor_attrs(input: ParseStream) -> syn::Result<Vec<AttrAst>> {
+fn reject_legacy_anchor(ident: &Ident) -> syn::Result<()> {
+    if ident
+        .to_string()
+        .trim_start_matches("r#")
+        .eq_ignore_ascii_case("anchor")
+    {
+        return Err(syn::Error::new(
+            ident.span(),
+            "legacy anchor { ... } is unsupported; use pos_x, pos_y, pos_type, anchor, and native edge attributes",
+        ));
+    }
+    Ok(())
+}
+
+fn parse_pseudo_element_attrs(input: ParseStream) -> syn::Result<Vec<AttrAst>> {
     let mut attrs = Vec::new();
     while !input.is_empty() {
         if peek_is_attr(input) {
@@ -445,7 +442,6 @@ fn gen_widget_def(el: &ElementAst) -> TokenStream2 {
     let tag_lit = syn::LitStr::new(&el.tag, Span::call_site());
     let name_expr = gen_name_expr(&el.name_attr);
     let attrs_tokens: Vec<_> = el.attrs.iter().map(gen_attr).collect();
-    let anchors_tokens: Vec<_> = el.anchors.iter().map(gen_anchor).collect();
     let nine_slice_expr = gen_nine_slice(&el.nine_slice);
     let children_tokens: Vec<_> = el.children.iter().map(gen_widget_child).collect();
     quote! {
@@ -454,7 +450,6 @@ fn gen_widget_def(el: &ElementAst) -> TokenStream2 {
             tag_owned: None,
             name: #name_expr,
             attrs: vec![#(#attrs_tokens),*],
-            anchors: vec![#(#anchors_tokens),*],
             nine_slice: #nine_slice_expr,
             children: vec![#(#children_tokens),*],
         }
@@ -490,36 +485,6 @@ fn gen_attr_value(val: &AttrValueAst) -> TokenStream2 {
         }
         AttrValueAst::Expr(expr) => {
             quote! { ui_toolkit::widget_def::AttrValue::Dynamic(#expr.to_string()) }
-        }
-    }
-}
-
-fn gen_anchor_field(name: &str, attrs: &[AttrAst]) -> TokenStream2 {
-    let default = match name {
-        "point" | "relative_point" => quote! { "CENTER".to_string() },
-        "relative_to" => quote! { "$parent".to_string() },
-        _ => quote! { "0".to_string() },
-    };
-    attrs
-        .iter()
-        .find(|a| a.name == name)
-        .map(|a| gen_anchor_field_value(&a.value))
-        .unwrap_or(default)
-}
-
-fn gen_anchor(anchor: &AnchorAst) -> TokenStream2 {
-    let point = gen_anchor_field("point", &anchor.attrs);
-    let relative_to = gen_anchor_field("relative_to", &anchor.attrs);
-    let relative_point = gen_anchor_field("relative_point", &anchor.attrs);
-    let x = gen_anchor_field("x", &anchor.attrs);
-    let y = gen_anchor_field("y", &anchor.attrs);
-    quote! {
-        ui_toolkit::widget_def::AnchorDef {
-            point: #point,
-            relative_to: #relative_to,
-            relative_point: #relative_point,
-            x: #x,
-            y: #y,
         }
     }
 }
@@ -603,25 +568,6 @@ fn gen_nine_slice_textures(attrs: &[AttrAst]) -> TokenStream2 {
     quote! { None }
 }
 
-fn gen_anchor_field_value(val: &AttrValueAst) -> TokenStream2 {
-    match val {
-        AttrValueAst::StringLit(s) => {
-            let lit = syn::LitStr::new(s, Span::call_site());
-            quote! { #lit.to_string() }
-        }
-        AttrValueAst::NumLit(s) => {
-            let lit = syn::LitStr::new(s, Span::call_site());
-            quote! { #lit.to_string() }
-        }
-        AttrValueAst::BoolLit(b) => {
-            let s = if *b { "true" } else { "false" };
-            let lit = syn::LitStr::new(s, Span::call_site());
-            quote! { #lit.to_string() }
-        }
-        AttrValueAst::Expr(expr) => quote! { #expr.to_string() },
-    }
-}
-
 // ──────────────────────────────────────────────────────────────────
 // Entry point
 // ──────────────────────────────────────────────────────────────────
@@ -632,4 +578,63 @@ pub fn rsx(input: TokenStream) -> TokenStream {
     let rsx_input = syn::parse_macro_input!(input as RsxInput);
     let children: Vec<TokenStream2> = rsx_input.roots.iter().map(gen_widget_child).collect();
     quote! { { vec![#(#children),*] } }.into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_anchor_blocks_have_explicit_diagnostics() {
+        for source in [
+            "anchor {}",
+            "frame { anchor { x: 4, } }",
+            "frame { Anchor {} }",
+            "frame { if visible { anchor {} } }",
+        ] {
+            let error = match syn::parse_str::<RsxInput>(source) {
+                Ok(_) => panic!("legacy anchor accepted: {source}"),
+                Err(error) => error,
+            };
+            assert!(
+                error
+                    .to_string()
+                    .contains("legacy anchor { ... } is unsupported")
+            );
+        }
+    }
+
+    #[test]
+    fn native_layout_attributes_parse_as_regular_values() {
+        let input = syn::parse_str::<RsxInput>(
+            r#"frame {
+            pos_x: 12,
+            pos_y: -8,
+            pos_type: "absolute",
+            anchor: "screen",
+            left: "50%",
+            right: "auto",
+            top: 1,
+            bottom: 2,
+            translate_x: "-50%",
+            translate_y: {offset},
+            margin_left: "auto",
+            margin_right: 4,
+            margin_top: 5,
+            margin_bottom: 6,
+            width: "auto",
+            height: "auto",
+            button { text: "Child", }
+        }"#,
+        )
+        .unwrap();
+        let ChildAst::Element(frame) = &input.roots[0] else {
+            panic!("expected frame")
+        };
+        assert_eq!(frame.attrs.len(), 16);
+        assert!(matches!(&frame.attrs[0].value, AttrValueAst::NumLit(v) if v == "12"));
+        assert!(matches!(&frame.attrs[3].value, AttrValueAst::StringLit(v) if v == "screen"));
+        assert!(matches!(&frame.attrs[9].value, AttrValueAst::Expr(_)));
+        assert_eq!(frame.children.len(), 1);
+    }
 }
