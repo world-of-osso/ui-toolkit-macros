@@ -363,13 +363,7 @@ fn parse_attr_value(input: ParseStream) -> syn::Result<AttrValueAst> {
     }
     if input.peek(LitFloat) {
         let f: LitFloat = input.parse()?;
-        let s = f
-            .base10_digits()
-            .split('.')
-            .next()
-            .unwrap_or("0")
-            .to_string();
-        return Ok(AttrValueAst::NumLit(s));
+        return Ok(AttrValueAst::NumLit(f.base10_digits().to_string()));
     }
     if input.peek(LitInt) {
         let i: LitInt = input.parse()?;
